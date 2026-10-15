@@ -12,7 +12,7 @@
     "validate": "tsx scripts/validate-synthetic.ts",
     "check:resources": "tsx scripts/check-resources.ts",
     "check:scope": "tsx scripts/check-scope.ts",
-    "check": "npm run typecheck && npm run validate && npm run check:resources && npm run check:scope && npm run test",
+    "check": "npm run typecheck && npm run validate && npm run check:resources && npm run check:scope -- --structural-only && npm run test",
     "eval": "tsx scripts/eval-pending.ts"
   },
   "dependencies": {

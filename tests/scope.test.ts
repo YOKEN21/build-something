@@ -49,6 +49,33 @@ test("check-scope rejects a file outside the allowed paths", () => {
   assert.equal(accepted.status, 0);
 });
 
+test("check-scope without a plan path list exits non-zero", () => {
+  const repoRoot = path.resolve(__dirname, "..");
+  const tsx = path.join(repoRoot, "node_modules", ".bin", "tsx");
+  const missing = spawnSync(tsx, ["scripts/check-scope.ts"], { cwd: repoRoot, encoding: "utf8" });
+  assert.notEqual(missing.status, 0);
+  assert.match(`${missing.stdout ?? ""}\n${missing.stderr ?? ""}`, /No approved plan path list was supplied/);
+
+  const mixed = spawnSync(tsx, ["scripts/check-scope.ts", "--structural-only", "--allowed", "README.md"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  assert.notEqual(mixed.status, 0);
+});
+
+test("structural catalog check runs only with the explicit flag", () => {
+  const repoRoot = path.resolve(__dirname, "..");
+  const tsx = path.join(repoRoot, "node_modules", ".bin", "tsx");
+  const structural = spawnSync(tsx, ["scripts/check-scope.ts", "--structural-only"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  const output = `${structural.stdout ?? ""}\n${structural.stderr ?? ""}`;
+  assert.equal(structural.status, 0);
+  assert.match(output, /Structural catalog-path check only/);
+  assert.match(output, /not a plan approval/);
+});
+
 test("rejects a synthetic file outside the catalog paths", () => {
   const problems = catalogPathProblems([
     "services/matter/matter-search/extra.json",
