@@ -203,8 +203,16 @@ export function parseApprovalRevision(body: string): number | undefined {
   return Number(match[1]);
 }
 
-export function approvalMatches(approval: ApprovalInput, revision: number, authoritativeIssue?: number): boolean {
-  if (approval.trusted_approver.trim().length === 0 || approval.author !== approval.trusted_approver) {
+export function approvalMatches(
+  approval: ApprovalInput,
+  revision: number,
+  trustedApprover: string,
+  authoritativeIssue?: number,
+): boolean {
+  if (trustedApprover.trim().length === 0 || approval.author !== trustedApprover) {
+    return false;
+  }
+  if (approval.trusted_approver !== undefined && approval.trusted_approver !== trustedApprover) {
     return false;
   }
   if (parseApprovalRevision(approval.body) !== revision) {
@@ -743,7 +751,7 @@ export function analyze(input: AssessmentInput, changeRequestSchema: object): An
     planValid &&
     input.plan !== null &&
     input.approval !== null &&
-    approvalMatches(input.approval, input.plan.revision, input.plan.issue);
+    approvalMatches(input.approval, input.plan.revision, input.trusted_approver, input.plan.issue);
   if (!approvalValid) {
     problems.push("approval is missing or does not match the plan revision and trusted approver");
   }
