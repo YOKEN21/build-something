@@ -1,0 +1,54 @@
+{
+  "rules": [
+    {
+      "id": "IAM-01",
+      "rule": "Catalog-authorized read access to another team's resource in the same account",
+      "effect": "medium; missing owner or authorization evidence requires HUMAN"
+    },
+    {
+      "id": "IAM-02",
+      "rule": "Wildcard action, resource *, or resource pattern outside the catalog-approved scope",
+      "effect": "high, blocking"
+    },
+    {
+      "id": "IAM-03",
+      "rule": "iam:, kms: or sts: action",
+      "effect": "high, blocking"
+    },
+    {
+      "id": "IAM-04",
+      "rule": "Cross-account access",
+      "effect": "high, blocking"
+    },
+    {
+      "id": "ENV-01",
+      "rule": "Touches prod",
+      "effect": "high"
+    },
+    {
+      "id": "NET-01",
+      "rule": "Public endpoint or public IP",
+      "effect": "high, blocking"
+    },
+    {
+      "id": "SCOPE-01",
+      "rule": "Changed file outside allowed paths",
+      "effect": "blocking → NO-GO; correct the change or obtain approval for a revised plan"
+    },
+    {
+      "id": "SELF-01",
+      "rule": "Changes .github/, assessor, policy or eval without plan naming them",
+      "effect": "blocking → NO-GO; correct the change or obtain approval for a revised plan"
+    },
+    {
+      "id": "SIZE-01",
+      "rule": "Config change beyond catalog defaults",
+      "effect": "medium"
+    },
+    {
+      "id": "CHECK-01",
+      "rule": "Required checks for the candidate commit completed unsuccessfully",
+      "effect": "blocking"
+    }
+  ]
+}

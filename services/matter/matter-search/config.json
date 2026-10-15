@@ -1,0 +1,11 @@
+{
+  "product": "matter",
+  "service": "matter-search",
+  "environment": "dev",
+  "account": "111111111111",
+  "owner": "matter",
+  "cpu": 512,
+  "memory": 1024,
+  "desiredCount": 1,
+  "publicEndpoint": false
+}

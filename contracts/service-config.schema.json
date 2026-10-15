@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Synthetic service configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "product",
+    "service",
+    "environment",
+    "account",
+    "owner",
+    "cpu",
+    "memory",
+    "desiredCount",
+    "publicEndpoint"
+  ],
+  "properties": {
+    "product": { "type": "string", "minLength": 1 },
+    "service": { "type": "string", "minLength": 1 },
+    "environment": { "type": "string", "enum": ["dev", "prod"] },
+    "account": { "type": "string", "const": "111111111111" },
+    "owner": { "type": "string", "minLength": 1 },
+    "cpu": { "type": "integer", "minimum": 1 },
+    "memory": { "type": "integer", "minimum": 1 },
+    "desiredCount": { "type": "integer", "minimum": 0 },
+    "publicEndpoint": { "type": "boolean" }
+  }
+}

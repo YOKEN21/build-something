@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Release rules",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rules"],
+  "properties": {
+    "rules": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "rule", "effect"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "IAM-01",
+              "IAM-02",
+              "IAM-03",
+              "IAM-04",
+              "ENV-01",
+              "NET-01",
+              "SCOPE-01",
+              "SELF-01",
+              "SIZE-01",
+              "CHECK-01"
+            ]
+          },
+          "rule": { "type": "string", "minLength": 1 },
+          "effect": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

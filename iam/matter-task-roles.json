@@ -1,0 +1,12 @@
+{
+  "account": "111111111111",
+  "roles": [
+    {
+      "name": "matter-search",
+      "service": "matter-search",
+      "product": "matter",
+      "environment": "dev",
+      "statements": []
+    }
+  ]
+}

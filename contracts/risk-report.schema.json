@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Risk report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "issue",
+    "pr",
+    "head_sha",
+    "base_sha",
+    "assessor_sha",
+    "plan_revision",
+    "assessment_status",
+    "risk",
+    "blocking",
+    "needs_human",
+    "rules_hit",
+    "evidence",
+    "scope_ok",
+    "summary",
+    "model",
+    "prompt_version"
+  ],
+  "properties": {
+    "issue": { "type": "integer", "minimum": 1 },
+    "pr": { "type": "integer", "minimum": 1 },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "assessor_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "plan_revision": { "type": "integer", "minimum": 1 },
+    "assessment_status": { "type": "string", "enum": ["complete", "incomplete"] },
+    "risk": {
+      "anyOf": [
+        { "type": "string", "enum": ["low", "medium", "high"] },
+        { "type": "null" }
+      ]
+    },
+    "blocking": { "type": "boolean" },
+    "needs_human": { "type": "boolean" },
+    "rules_hit": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "IAM-01",
+          "IAM-02",
+          "IAM-03",
+          "IAM-04",
+          "ENV-01",
+          "NET-01",
+          "SCOPE-01",
+          "SELF-01",
+          "SIZE-01",
+          "CHECK-01"
+        ]
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "quote"],
+        "properties": {
+          "file": { "type": "string", "minLength": 1 },
+          "quote": { "type": "string" }
+        }
+      }
+    },
+    "scope_ok": { "type": "boolean" },
+    "summary": { "type": "string" },
+    "model": { "type": "string" },
+    "prompt_version": { "type": "string" }
+  }
+}
