@@ -7,6 +7,8 @@ description: Implement one catalog change inside the task's allowed paths. The c
 
 Use this skill for one in-scope catalog change. Stop at the pull request. Do not merge. Do not invent an approval, an authorization record, or an assessment result.
 
+The release-risk assessor is already in `src/risk-assessor/`. An ordinary catalog change does not edit it, `.github/workflows/risk-assessment.yml`, or call the live Grok API. Live evaluation is not part of `npm run check`. `npm run eval` is still pending.
+
 ## Procedure
 
 1. Read the task and the relevant catalog.
