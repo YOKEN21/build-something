@@ -64,7 +64,17 @@ Three request types, each with a page in `catalog/` describing what a complete r
 
 Expected outcome: a PR adding read-only access scoped to `incoming/` per AUTH-DOC-001, with bucket-level and object-level actions in separate statements; assessor returns `medium`, rule `IAM-01` (cross-team resource), not blocking; GO only because AUTH-DOC-001 establishes authorization and all other GO conditions hold. Kenny decides whether to merge. The same request without a matching authorization record would be HUMAN.
 
-This demo's policy permits cross-team read access within the same account when the catalog records the owner and approved resource scope. Cross-account access is blocking. Missing ownership or authorization evidence requires HUMAN. These are explicit demo policy choices, not a claim about any customer's policy.
+This demo's policy permits cross-team read access within the same account when the catalog records the owner and approved resource scope. Cross-account access is blocking. Missing or ambiguous ownership or authorization evidence requires HUMAN. These are explicit demo policy choices, not a claim about any customer's policy.
+
+### Policy decisions
+
+Kenny decided the following. `docs/service-catalog.md` states the same five decisions. They do not add an authorization record. AUTH-DOC-001 stays unchanged.
+
+1. The exact approved bucket and object prefix are permitted.
+2. A wildcard grant demonstrably broader than the recorded authorization is IAM-02 = NO-GO.
+3. Missing or ambiguous ownership or authorization evidence = HUMAN.
+4. Cross-account access stays IAM-04 = NO-GO.
+5. The assessor evaluates the candidate commit but runs trusted code from `main`.
 
 Build the first end-to-end loop with a simple config change before rehearsing this richer IAM scenario.
 
@@ -297,7 +307,7 @@ A command-line program. It collects and validates inputs, makes one logical Grok
 | SIZE-01 | Config change beyond catalog defaults | medium |
 | CHECK-01 | Required checks for the candidate commit completed unsuccessfully | blocking |
 
-For this bounded synthetic format, code computes scope, protected-file changes, catalog limits, explicit broad grants, sensitive actions, account/environment changes, public exposure and check status. A trailing object prefix such as `arn:aws:s3:::example-documents-dev/incoming/*` is allowed only when that exact bucket and prefix are approved in the catalog and plan; it is not the same as resource `*`. Unsupported or ambiguous policy structures require HUMAN. Config changes must also pass schema and valid CPU/memory combination checks; exceeding a preferred size is distinct from an invalid configuration.
+For this bounded synthetic format, code computes scope, protected-file changes, catalog limits, explicit broad grants, sensitive actions, account/environment changes, public exposure and check status. A trailing object prefix such as `arn:aws:s3:::example-documents-dev/incoming/*` is allowed only when that exact bucket and prefix are approved in the catalog and plan; it is not the same as resource `*`. The exact approved bucket and object prefix are permitted. A wildcard grant demonstrably broader than the recorded authorization is IAM-02 = NO-GO. Missing or ambiguous ownership or authorization evidence = HUMAN. Cross-account access stays IAM-04 = NO-GO. The assessor evaluates the candidate commit but runs trusted code from `main`. Unsupported or ambiguous policy structures require HUMAN. Config changes must also pass schema and valid CPU/memory combination checks; exceeding a preferred size is distinct from an invalid configuration.
 
 Grok assesses whether the change meets the approved intent, identifies contextual risks and missing information, and explains findings with evidence. These outputs feed Assurance's decision; the API is not just a cosmetic summary. A blocking violation is **confirmed** when the deterministic checks in code establish it. A blocking concern raised only by the model is an unresolved finding and produces HUMAN, not NO-GO. `validate.ts` preserves deterministic findings, accepts only known rule IDs, checks quotes against their named diff files, and applies policy risk floors. The model can add concerns but cannot remove a code-detected block. Valid JSON and matching quotes alone do not prove the assessment is correct.
 
