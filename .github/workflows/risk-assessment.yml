@@ -25,11 +25,12 @@ jobs:
     name: prepare assessment inputs
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Artifact upload in this same run does not need actions: write.
+    # No step reads Actions data, so actions: read is omitted.
     permissions:
       contents: read
       pull-requests: write
       checks: read
-      actions: write
     outputs:
       trusted_sha: ${{ steps.trusted.outputs.trusted_sha }}
       pr_number: ${{ steps.trusted.outputs.pr_number }}
@@ -121,11 +122,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     environment: grok-assessment
+    # Artifact upload and download in this same run do not need actions: write.
+    # No step reads Actions data, so actions: read is omitted. This job holds XAI_API_KEY.
     permissions:
       contents: read
       pull-requests: read
       checks: read
-      actions: write
     steps:
       - name: Require refs/heads/main
         shell: bash
