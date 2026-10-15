@@ -1,0 +1,26 @@
+{
+  "name": "build-something",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Synthetic release-readiness foundation. Not a deployed service.",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "validate": "tsx scripts/validate-synthetic.ts",
+    "check:resources": "tsx scripts/check-resources.ts",
+    "check:scope": "tsx scripts/check-scope.ts",
+    "check": "npm run typecheck && npm run validate && npm run check:resources && npm run check:scope && npm run test",
+    "eval": "tsx scripts/eval-pending.ts"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}
