@@ -1,0 +1,8 @@
+---
+description: Protected paths change only when the plan names them
+alwaysApply: true
+---
+
+# Protected files
+
+`.github/`, `src/risk-assessor/`, `policy/`, and `eval/` change only when the plan's allowed paths name them.

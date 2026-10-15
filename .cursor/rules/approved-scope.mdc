@@ -1,0 +1,12 @@
+---
+description: Read the named plan and stay inside its allowed paths
+alwaysApply: true
+---
+
+# Approved scope
+
+- Read the plan comment named in the task.
+- Touch only the allowed paths.
+- Stop at the pull request.
+- Never merge.
+- Escalate ambiguity instead of guessing.

@@ -1,0 +1,11 @@
+---
+description: Follow the catalog and release policy when changing synthetic files
+alwaysApply: true
+---
+
+# Change quality
+
+- Follow the catalog and release policy.
+- Copy an existing file's shape.
+- Broad wildcard grants remain blocking even if requested.
+- No real account IDs or secrets.
