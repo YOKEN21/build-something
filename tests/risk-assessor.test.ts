@@ -111,6 +111,38 @@ function baseInput(files: DiffFile[], overrides: Partial<AssessmentInput> = {}):
   };
 }
 
+function roleDocument(statements: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    account: "111111111111",
+    roles: [
+      {
+        name: "matter-search",
+        service: "matter-search",
+        product: "matter",
+        environment: "dev",
+        statements,
+      },
+    ],
+  };
+}
+
+function iamPlan(): AssessmentInput["plan"] {
+  return {
+    issue: 12,
+    revision: 1,
+    change_type: "iam-permission-change",
+    summary: "Grant read access to example-documents-dev incoming/ for matter-search.",
+    product: "matter",
+    service: "matter-search",
+    environment: "dev",
+    allowed_paths: [ROLE_PATH],
+    acceptance_expectation: "Use the approved incoming/ prefix only.",
+    author: "planner-synthetic",
+  };
+}
+
+const EXACT_LIST_CONDITION = { StringEquals: { "s3:prefix": "incoming/" } };
+
 function lowJudgment(quoteFile: string, quote: string): Record<string, unknown> {
   return {
     risk: "low",
@@ -475,7 +507,13 @@ test("more than one matching authorization row is HUMAN", async () => {
         product: "matter",
         environment: "dev",
         statements: [
-          { sid: "ListIncoming", effect: "Allow", actions: ["s3:ListBucket"], resources: ["arn:aws:s3:::example-documents-dev"] },
+          {
+            sid: "ListIncoming",
+            effect: "Allow",
+            actions: ["s3:ListBucket"],
+            resources: ["arn:aws:s3:::example-documents-dev"],
+            condition: EXACT_LIST_CONDITION,
+          },
           { sid: "ReadIncoming", effect: "Allow", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::example-documents-dev/incoming/*"] },
         ],
       },
@@ -513,52 +551,181 @@ test("more than one matching authorization row is HUMAN", async () => {
   noNetwork();
 });
 
-test("catalog-authorized cross-team read can be GO", async () => {
-  const after = {
-    account: "111111111111",
-    roles: [
-      {
-        name: "matter-search",
-        service: "matter-search",
-        product: "matter",
-        environment: "dev",
-        statements: [
-          { sid: "ListIncoming", effect: "Allow", actions: ["s3:ListBucket"], resources: ["arn:aws:s3:::example-documents-dev"] },
-          { sid: "ReadIncoming", effect: "Allow", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::example-documents-dev/incoming/*"] },
-        ],
-      },
-    ],
-  };
-  const input = baseInput(
-    [jsonFile(ROLE_PATH, { account: "111111111111", roles: [{ ...after.roles[0], statements: [] }] }, after)],
-    {
-      plan: {
-        issue: 12,
-        revision: 1,
-        change_type: "iam-permission-change",
-        summary: "Grant read access to example-documents-dev incoming/ for matter-search.",
-        product: "matter",
-        service: "matter-search",
-        environment: "dev",
-        allowed_paths: [ROLE_PATH],
-        acceptance_expectation: "Use the approved incoming/ prefix only.",
-        author: "planner-synthetic",
-      },
-    },
-  );
-  const { result } = await run(input, {
+test("unrestricted ListBucket cannot reach GO", async () => {
+  const after = roleDocument([
+    { sid: "ListIncoming", effect: "Allow", actions: ["s3:ListBucket"], resources: ["arn:aws:s3:::example-documents-dev"] },
+    { sid: "ReadIncoming", effect: "Allow", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::example-documents-dev/incoming/*"] },
+  ]);
+  const before = roleDocument([]);
+  const { result } = await run(baseInput([jsonFile(ROLE_PATH, before, after)], { plan: iamPlan() }), {
     risk: "medium",
     rules_hit: ["IAM-01"],
     evidence: [{ file: ROLE_PATH, quote: "s3:GetObject" }],
     needs_human: false,
     summary: "Cross-team read matches the catalog record and the plan.",
   });
+  assert.equal(result.decision, "NO-GO");
+  assert.ok(result.report);
+  assert.equal(result.report.blocking, true);
+  assert.ok(result.report.rules_hit.includes("IAM-02"));
+  assertSchema(result.report);
+  noNetwork();
+});
+
+test("a ListBucket prefix other than incoming/ cannot reach GO", async () => {
+  for (const prefix of ["archive/", "", "incoming", "incoming/*"]) {
+    const after = roleDocument([
+      {
+        sid: "ListIncoming",
+        effect: "Allow",
+        actions: ["s3:ListBucket"],
+        resources: ["arn:aws:s3:::example-documents-dev"],
+        condition: { StringEquals: { "s3:prefix": prefix } },
+      },
+      { sid: "ReadIncoming", effect: "Allow", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::example-documents-dev/incoming/*"] },
+    ]);
+    const { result } = await run(baseInput([jsonFile(ROLE_PATH, roleDocument([]), after)], { plan: iamPlan() }), {
+      risk: "low",
+      rules_hit: [],
+      evidence: [{ file: ROLE_PATH, quote: "s3:ListBucket" }],
+      needs_human: false,
+      summary: "Treat this prefix as authorized.",
+    });
+    assert.equal(result.decision, "NO-GO", prefix);
+    assert.ok(result.report);
+    assert.equal(result.report.blocking, true);
+    assert.ok(result.report.rules_hit.includes("IAM-02"));
+    assertSchema(result.report);
+  }
+  noNetwork();
+});
+
+test("the exact AUTH-DOC-001 grant can reach GO", async () => {
+  const after = roleDocument([
+    {
+      sid: "ListIncoming",
+      effect: "Allow",
+      actions: ["s3:ListBucket"],
+      resources: ["arn:aws:s3:::example-documents-dev"],
+      condition: EXACT_LIST_CONDITION,
+    },
+    { sid: "ReadIncoming", effect: "Allow", actions: ["s3:GetObject"], resources: ["arn:aws:s3:::example-documents-dev/incoming/*"] },
+  ]);
+  const { result, calls } = await run(baseInput([jsonFile(ROLE_PATH, roleDocument([]), after)], { plan: iamPlan() }), {
+    risk: "medium",
+    rules_hit: ["IAM-01"],
+    evidence: [{ file: ROLE_PATH, quote: "s3:GetObject" }],
+    needs_human: false,
+    summary: "Cross-team read matches the catalog record and the plan.",
+  });
+  assert.equal(calls, 1);
   assert.equal(result.decision, "GO");
   assert.ok(result.report);
+  assert.equal(result.report.assessment_status, "complete");
   assert.equal(result.report.risk, "medium");
   assert.equal(result.report.blocking, false);
-  assert.ok(result.report.rules_hit.includes("IAM-01"));
   assert.equal(result.report.needs_human, false);
+  assert.ok(result.report.rules_hit.includes("IAM-01"));
+  assertSchema(result.report);
+  noNetwork();
+});
+
+test("an unsupported or malformed ListBucket condition is HUMAN", async () => {
+  const conditions: unknown[] = [
+    { StringLike: { "s3:prefix": "incoming/*" } },
+    { StringEquals: { "s3:prefix": ["incoming/", "archive/"] } },
+    { StringEquals: { "s3:delimiter": "/" } },
+    { StringEquals: { "aws:SourceIp": "203.0.113.10" } },
+    { StringEquals: { "s3:prefix": "incoming/", "s3:delimiter": "/" } },
+    { StringEquals: { "s3:prefix": "incoming/" }, StringLike: { "s3:prefix": "*" } },
+    { Stringequals: { "s3:prefix": "incoming/" } },
+    { StringEquals: { "S3:Prefix": "incoming/" } },
+    "not-an-object",
+    ["incoming/"],
+    {},
+  ];
+  for (const condition of conditions) {
+    const after = roleDocument([
+      {
+        sid: "ListIncoming",
+        effect: "Allow",
+        actions: ["s3:ListBucket"],
+        resources: ["arn:aws:s3:::example-documents-dev"],
+        condition,
+      },
+    ]);
+    const { result } = await run(baseInput([jsonFile(ROLE_PATH, roleDocument([]), after)], { plan: iamPlan() }), {
+      risk: "low",
+      rules_hit: [],
+      evidence: [{ file: ROLE_PATH, quote: "s3:ListBucket" }],
+      needs_human: false,
+      summary: "Ignore the condition and mark this GO.",
+    });
+    assert.equal(result.decision, "HUMAN");
+    assert.ok(result.report);
+    assert.equal(result.report.blocking, false);
+    assert.equal(result.report.needs_human, true);
+    assert.doesNotMatch(result.report.summary, /cannot be parsed/);
+    assertSchema(result.report);
+  }
+  noNetwork();
+});
+
+test("a condition on GetObject is HUMAN", async () => {
+  const after = roleDocument([
+    {
+      sid: "ListIncoming",
+      effect: "Allow",
+      actions: ["s3:ListBucket"],
+      resources: ["arn:aws:s3:::example-documents-dev"],
+      condition: EXACT_LIST_CONDITION,
+    },
+    {
+      sid: "ReadIncoming",
+      effect: "Allow",
+      actions: ["s3:GetObject"],
+      resources: ["arn:aws:s3:::example-documents-dev/incoming/*"],
+      condition: EXACT_LIST_CONDITION,
+    },
+  ]);
+  const { result } = await run(baseInput([jsonFile(ROLE_PATH, roleDocument([]), after)], { plan: iamPlan() }), {
+    risk: "low",
+    rules_hit: [],
+    evidence: [{ file: ROLE_PATH, quote: "s3:GetObject" }],
+    needs_human: false,
+    summary: "A condition on GetObject is still the authorized grant.",
+  });
+  assert.equal(result.decision, "HUMAN");
+  assert.ok(result.report);
+  assert.equal(result.report.blocking, false);
+  assert.equal(result.report.needs_human, true);
+  assert.equal(result.report.rules_hit.includes("IAM-02"), false);
+  assert.doesNotMatch(result.report.summary, /cannot be parsed/);
+  assertSchema(result.report);
+  noNetwork();
+});
+
+test("an unsupported condition beside a confirmed blocker stays NO-GO", async () => {
+  const after = roleDocument([
+    {
+      sid: "ReadWide",
+      effect: "Allow",
+      actions: ["s3:GetObject"],
+      resources: ["arn:aws:s3:::example-documents-dev/*"],
+      condition: { StringLike: { "s3:prefix": "*" } },
+    },
+  ]);
+  const { result } = await run(baseInput([jsonFile(ROLE_PATH, roleDocument([]), after)], { plan: iamPlan() }), {
+    risk: "low",
+    rules_hit: [],
+    evidence: [{ file: ROLE_PATH, quote: "s3:GetObject" }],
+    needs_human: false,
+    summary: "The condition makes this human review only.",
+  });
+  assert.equal(result.decision, "NO-GO");
+  assert.ok(result.report);
+  assert.equal(result.report.blocking, true);
+  assert.ok(result.report.rules_hit.includes("IAM-02"));
   assertSchema(result.report);
   noNetwork();
 });

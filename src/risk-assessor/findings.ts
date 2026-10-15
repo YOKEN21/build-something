@@ -58,10 +58,16 @@ export type Analysis = {
   humanCauses: string[];
 };
 
+type StatementCondition =
+  | { kind: "absent" }
+  | { kind: "prefix"; prefix: string }
+  | { kind: "unsupported" };
+
 type Statement = {
   effect: "Allow" | "Deny";
   actions: string[];
   resources: string[];
+  condition: StatementCondition;
 };
 
 type RoleDocument = {
@@ -95,11 +101,31 @@ function stringArray(value: unknown): string[] | undefined {
   return value;
 }
 
+function classifyCondition(value: unknown): StatementCondition {
+  if (!isRecord(value)) {
+    return { kind: "unsupported" };
+  }
+  const operators = Object.keys(value);
+  if (operators.length !== 1 || operators[0] !== "StringEquals") {
+    return { kind: "unsupported" };
+  }
+  const equals = value.StringEquals;
+  if (!isRecord(equals)) {
+    return { kind: "unsupported" };
+  }
+  const keys = Object.keys(equals);
+  const prefix = equals["s3:prefix"];
+  if (keys.length !== 1 || keys[0] !== "s3:prefix" || typeof prefix !== "string") {
+    return { kind: "unsupported" };
+  }
+  return { kind: "prefix", prefix };
+}
+
 function parseStatement(value: unknown): Statement | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  if (Object.keys(value).some((key) => !["sid", "effect", "actions", "resources"].includes(key))) {
+  if (Object.keys(value).some((key) => !["sid", "effect", "actions", "resources", "condition"].includes(key))) {
     return undefined;
   }
   const actions = stringArray(value.actions);
@@ -107,7 +133,10 @@ function parseStatement(value: unknown): Statement | undefined {
   if (typeof value.sid !== "string" || (value.effect !== "Allow" && value.effect !== "Deny") || !actions || !resources) {
     return undefined;
   }
-  return { effect: value.effect, actions, resources };
+  const condition = Object.prototype.hasOwnProperty.call(value, "condition")
+    ? classifyCondition(value.condition)
+    : { kind: "absent" as const };
+  return { effect: value.effect, actions, resources, condition };
 }
 
 function parseRoleDocument(value: unknown): RoleDocument | undefined {
@@ -385,6 +414,13 @@ function statementWithinScope(record: AuthorizationRecord, statement: Statement,
     if (bucketAction === objectAction) {
       return false;
     }
+    if (bucketAction) {
+      if (statement.condition.kind !== "prefix" || statement.condition.prefix !== scope.prefix) {
+        return false;
+      }
+    } else if (statement.condition.kind !== "absent") {
+      return false;
+    }
     for (const resource of statement.resources) {
       if (bucketAction) {
         if (resource !== scope.bucketArn) {
@@ -418,7 +454,31 @@ type IamOutcome = {
   ambiguous: boolean;
   hasAllow: boolean;
   schemaOk: boolean;
+  unsupportedCondition: boolean;
 };
+
+function listBucketOutsideCatalogPrefix(statement: Statement, catalog: ParsedCatalog): boolean {
+  if (!statement.actions.includes("s3:ListBucket") || statement.condition.kind === "unsupported") {
+    return false;
+  }
+  const prefix = statement.condition.kind === "prefix" ? statement.condition.prefix : undefined;
+  for (const resource of statement.resources) {
+    if (!resource.startsWith("arn:aws:s3:::") || resource.slice("arn:aws:s3:::".length).includes("/")) {
+      continue;
+    }
+    const bucket = resource.slice("arn:aws:s3:::".length);
+    if (prefix === undefined) {
+      return true;
+    }
+    const allowed = catalog.authorizations.some(
+      (record) => record.scope.bucket === bucket && record.scope.bucketArn === resource && record.scope.prefix === prefix,
+    );
+    if (!allowed) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function assessIamFile(
   file: DiffFile,
@@ -428,11 +488,29 @@ function assessIamFile(
 ): IamOutcome {
   const parsed = parseJson(file.after);
   if (!parsed.ok) {
-    return { rules: [], evidence: [], unresolved: false, authorized: false, ambiguous: true, hasAllow: false, schemaOk: false };
+    return {
+      rules: [],
+      evidence: [],
+      unresolved: false,
+      authorized: false,
+      ambiguous: true,
+      hasAllow: false,
+      schemaOk: false,
+      unsupportedCondition: false,
+    };
   }
   const document = parseRoleDocument(parsed.value);
   if (!document) {
-    return { rules: [], evidence: [], unresolved: false, authorized: false, ambiguous: true, hasAllow: false, schemaOk: false };
+    return {
+      rules: [],
+      evidence: [],
+      unresolved: false,
+      authorized: false,
+      ambiguous: true,
+      hasAllow: false,
+      schemaOk: false,
+      unsupportedCondition: false,
+    };
   }
   const schemaOk = validateInstance(taskRoleSchema, parsed.value).ok;
   const rules: RuleId[] = [];
@@ -440,6 +518,7 @@ function assessIamFile(
   let unresolved = false;
   let authorized = true;
   let hasAllow = false;
+  let unsupportedCondition = false;
   for (const role of document.roles) {
     if (role.environment === "prod") {
       addRule(rules, "ENV-01");
@@ -516,6 +595,20 @@ function assessIamFile(
               evidence.push(quote);
             }
           }
+        }
+      }
+      if (statement.condition.kind === "unsupported" || (statement.condition.kind !== "absent" && statement.actions.includes("s3:GetObject"))) {
+        unsupportedCondition = true;
+      }
+      if (listBucketOutsideCatalogPrefix(statement, catalog)) {
+        addRule(rules, "IAM-02");
+        const needles = ["s3:ListBucket"];
+        if (statement.condition.kind === "prefix" && statement.condition.prefix.length > 0) {
+          needles.unshift(statement.condition.prefix);
+        }
+        const quote = quoteFor(file, needles);
+        if (quote) {
+          evidence.push(quote);
         }
       }
     }
@@ -608,7 +701,7 @@ function assessIamFile(
   if (unresolved || rules.includes("IAM-02") || rules.includes("IAM-03") || rules.includes("IAM-04")) {
     authorized = false;
   }
-  return { rules, evidence, unresolved, authorized, ambiguous: false, hasAllow, schemaOk };
+  return { rules, evidence, unresolved, authorized, ambiguous: false, hasAllow, schemaOk, unsupportedCondition };
 }
 
 function assessConfigFile(file: DiffFile): {
@@ -887,6 +980,11 @@ export function analyze(input: AssessmentInput, changeRequestSchema: object): An
         }
         if (!iam.schemaOk) {
           problems.push(`task role file does not match its schema: ${pathName}`);
+        }
+        if (iam.unsupportedCondition) {
+          unresolvedAuthorization = true;
+          problems.push(`unsupported condition form: ${pathName}`);
+          humanCauses.push("unsupported_condition");
         }
       }
     }
