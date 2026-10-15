@@ -24,7 +24,7 @@ The Grok API is called by a **release-risk assessor** that Cursor builds. It rea
 | Coding agent | Cursor cloud agent, dispatched by the Platform Engineer |
 | Grok API use | Release-risk assessor: structured JSON risk report the bots act on |
 | Where code runs | GitHub Actions on GitHub-hosted runners, public repository; no containers, no AWS |
-| Human steps | Approve plan revision; approve the key-bearing assessment job; merge |
+| Human steps | Approve plan revision; approve the key-bearing assessment job; merge; resolve HUMAN outcomes according to their cause |
 | Repository | `YOKEN21/build-something`; original project code and synthetic examples |
 
 Keep this brief and the plan at the repository root so the bots and Cursor share the same versioned context. Use original code and synthetic data; exclude private source code, customer material, credentials and private correspondence.
@@ -34,6 +34,16 @@ Keep this brief and the plan at the repository root so the bots and Cursor share
 The enterprise problem is that go/no-go on platform changes depends on a senior engineer reading the ticket, the diff and the CI output by hand. It is slow, inconsistent, and the evidence is scattered. The system makes the evidence structured and the decision visible while leaving the decision with a human.
 
 Four bots exist because each owns one thing: the status board, the developer, the repo, or the evidence. Bots clarify directly because that is faster than a ticket round trip, but only a versioned plan and a human approval authorize work, so a conversation cannot negotiate a requirement away. The judge is the risk assessor on protected `main`, never the version inside the PR, so a change cannot grade itself.
+
+## Decision policy
+
+Assurance applies one order to every assessment:
+
+1. Any confirmed blocking violation produces **NO-GO**, even if another part of the assessment is incomplete.
+2. Otherwise, incomplete or invalid evidence, a failed assessment, unresolved authorization or high risk produces **HUMAN**.
+3. **GO** requires a complete valid assessment, passing required checks, established authorization, and no blocking or unresolved findings.
+
+GO is a recommendation for Kenny's merge review, not merge authorization. HUMAN stops progression until it is resolved. A recorded proceed decision can resolve only high risk or a model-only concern, and only when the assessment is complete and valid for the current PR head, required checks pass, the plan approval is valid and authorization is established. Evidence problems and assessment failures need corrected evidence and a new assessment; unresolved authorization needs an explicit authorization record and reassessment. A decision applies only to the named head SHA and plan revision. Confirmed blockers remain NO-GO and cannot be bypassed. See PROJECT-PLAN.md Sections 4 and 7.
 
 ## Capability checks
 
