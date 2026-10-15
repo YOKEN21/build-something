@@ -43,6 +43,8 @@ export type ApprovalInput = {
   author: string;
   body: string;
   trusted_approver: string;
+  /** Issue or pull request whose comment thread contained this approval. */
+  source_issue?: number;
 };
 
 export type DiffFile = {

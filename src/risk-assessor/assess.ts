@@ -2,7 +2,7 @@ import path from "node:path";
 import { readJson } from "../checks/schema";
 import { validateInstance } from "../checks/schema";
 import { decide } from "./decision";
-import { analyze, maxRisk, riskFloorFor } from "./findings";
+import { analyze, maxRisk, policyRiskFloor } from "./findings";
 import { JUDGMENT_SCHEMA, PROMPT_VERSION, buildPrompt } from "./prompt";
 import type { AssessmentInput, AssessmentResult, Diagnostics, Evidence, ModelProvider, RiskReport, RuleId } from "./types";
 import { RULE_IDS } from "./types";
@@ -228,10 +228,10 @@ export async function assess(
     (rule) => BLOCKING.has(rule) && !analysis.rules.includes(rule),
   );
   const rules = sortRules([...analysis.rules, ...judgment.judgment.rules_hit]);
+  // Only deterministic code confirms a blocker. A model-only blocking rule stays unresolved.
   const blocking = analysis.blocking;
-  let risk = maxRisk(riskFloorFor(analysis.rules, input.plan.change_type), judgment.judgment.risk);
+  let risk = maxRisk(policyRiskFloor(input.policy, rules, input.plan.change_type), judgment.judgment.risk);
   if (modelOnlyBlocking.length > 0) {
-    risk = maxRisk(risk, riskFloorFor(modelOnlyBlocking, input.plan.change_type));
     humanCauses.push("model_only_blocker");
   }
   let needsHuman = analysis.needsHuman || judgment.judgment.needs_human || modelOnlyBlocking.length > 0;

@@ -4,7 +4,7 @@ import path from "node:path";
 import test, { after } from "node:test";
 import { assess } from "../src/risk-assessor/assess";
 import { parseCatalog } from "../src/risk-assessor/catalog";
-import { preApprovalComment, recheckPullRequest, selectApproval, selectPlan, type GitHubClient } from "../src/risk-assessor/collect";
+import { collectPullRequest, preApprovalComment, recheckPullRequest, selectApproval, selectPlan, type GitHubClient } from "../src/risk-assessor/collect";
 import { decide } from "../src/risk-assessor/decision";
 import { parseApprovalRevision } from "../src/risk-assessor/findings";
 import {
@@ -99,6 +99,7 @@ function baseInput(files: DiffFile[], overrides: Partial<AssessmentInput> = {}):
       author: "kenny-synthetic",
       body: "APPROVED plan v1",
       trusted_approver: "kenny-synthetic",
+      source_issue: 12,
     },
     diff: { files },
     catalog_markdown: catalogMarkdown,
@@ -988,6 +989,155 @@ test("extracts Responses API output text and treats refusal as no text", () => {
     output: [{ type: "message", content: [{ type: "refusal", refusal: "no" }] }],
   });
   assert.equal(refusal.refusal, true);
+});
+
+test("an approval from another issue does not authorize the plan", async () => {
+  const planBody = [
+    "## Plan revision 1",
+    "Request summary: Raise matter-search CPU within catalog defaults.",
+    "Change type: config-change",
+    "Product: matter",
+    "Service: matter-search",
+    "Environment: dev",
+    "Allowed paths: services/matter/matter-search/config.json",
+    "Acceptance expectation: CPU 1024 and memory 2048 remain a valid pair.",
+    "Revision: 1",
+    "Issue: 12",
+  ].join("\n");
+  const beforeText = `${JSON.stringify(matterConfig(), null, 2)}\n`;
+  const afterText = `${JSON.stringify(matterConfig({ cpu: 1024, memory: 2048 }), null, 2)}\n`;
+  const client: GitHubClient = {
+    async get(requestPath: string) {
+      if (requestPath.endsWith("/pulls/14")) {
+        return {
+          status: 200,
+          linkNext: false,
+          body: {
+            head: { sha: HEAD, repo: { fork: false, full_name: "YOKEN21/build-something" } },
+            base: { ref: "main", sha: BASE, repo: { full_name: "YOKEN21/build-something" } },
+            body: "Plan is on #12. See also #99.",
+          },
+        };
+      }
+      if (requestPath.includes("/pulls/14/files")) {
+        return {
+          status: 200,
+          linkNext: false,
+          body: [{ filename: CONFIG_PATH, status: "modified", patch: '"cpu": 1024' }],
+        };
+      }
+      if (requestPath.includes("/contents/")) {
+        const text = requestPath.includes(`ref=${HEAD}`) ? afterText : beforeText;
+        return {
+          status: 200,
+          linkNext: false,
+          body: { encoding: "base64", content: Buffer.from(text, "utf8").toString("base64") },
+        };
+      }
+      if (requestPath.includes("/check-runs")) {
+        return {
+          status: 200,
+          linkNext: false,
+          body: { check_runs: [{ name: "secret-free checks", conclusion: "success", status: "completed" }] },
+        };
+      }
+      if (requestPath.includes("/issues/12/comments")) {
+        return { status: 200, linkNext: false, body: [{ body: planBody, user: { login: "planner-synthetic" } }] };
+      }
+      if (requestPath.includes("/issues/99/comments")) {
+        return {
+          status: 200,
+          linkNext: false,
+          body: [{ body: "APPROVED plan v1", user: { login: "kenny-synthetic" } }],
+        };
+      }
+      if (requestPath.includes("/issues/14/comments")) {
+        return { status: 200, linkNext: false, body: [] };
+      }
+      throw new Error(`unexpected GitHub path ${requestPath}`);
+    },
+  };
+  const collected = await collectPullRequest(client, {
+    owner: "YOKEN21",
+    repo: "build-something",
+    prNumber: 14,
+    expectedHeadSha: HEAD,
+    assessorSha: ASSESSOR,
+    trustedApprover: "kenny-synthetic",
+    catalogMarkdown,
+    policy,
+  });
+  assert.equal(collected.ok, true);
+  if (!collected.ok) {
+    return;
+  }
+  assert.equal(collected.input.plan?.issue, 12);
+  assert.equal(collected.input.approval, null);
+  const { result, calls } = await run(collected.input, lowJudgment(CONFIG_PATH, '"cpu": 1024'));
+  assert.equal(calls, 0);
+  assert.equal(result.decision, "HUMAN");
+  assert.ok(result.report);
+  assert.equal(result.report.needs_human, true);
+  assert.equal(result.report.assessment_status, "incomplete");
+  noNetwork();
+});
+
+test("a model ENV-01 finding keeps the high risk floor", async () => {
+  const file = jsonFile(CONFIG_PATH, matterConfig(), matterConfig({ cpu: 1024, memory: 2048 }));
+  const { result, calls } = await run(baseInput([file]), {
+    risk: "low",
+    rules_hit: ["ENV-01"],
+    evidence: [{ file: CONFIG_PATH, quote: '"cpu": 1024' }],
+    needs_human: false,
+    summary: "The model called this low and not a human review.",
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.decision, "HUMAN");
+  assert.ok(result.report);
+  assert.equal(result.report.assessment_status, "complete");
+  assert.equal(result.report.blocking, false);
+  assert.equal(result.report.needs_human, true);
+  assert.equal(result.report.risk, "high");
+  assert.ok(result.report.rules_hit.includes("ENV-01"));
+  assertSchema(result.report);
+  noNetwork();
+});
+
+test("a confirmed public endpoint stays NO-GO when the IAM file cannot be parsed", async () => {
+  const config = jsonFile(CONFIG_PATH, matterConfig(), matterConfig({ publicEndpoint: true }));
+  const iam: DiffFile = {
+    path: ROLE_PATH,
+    before: `${JSON.stringify({ account: "111111111111", roles: [] }, null, 2)}\n`,
+    after: "{ not valid json\n",
+    patch: `diff --git a/${ROLE_PATH} b/${ROLE_PATH}\n+{ not valid json\n`,
+  };
+  const { result, calls } = await run(
+    baseInput([config, iam], {
+      plan: {
+        issue: 12,
+        revision: 1,
+        change_type: "config-change",
+        summary: "Expose matter-search and edit its task role.",
+        product: "matter",
+        service: "matter-search",
+        environment: "dev",
+        allowed_paths: [CONFIG_PATH, ROLE_PATH],
+        acceptance_expectation: "Public endpoint stays a blocking finding.",
+        author: "planner-synthetic",
+      },
+    }),
+    lowJudgment(CONFIG_PATH, '"publicEndpoint": true'),
+  );
+  assert.equal(calls, 0);
+  assert.equal(result.decision, "NO-GO");
+  assert.ok(result.report);
+  assert.equal(result.report.blocking, true);
+  assert.equal(result.report.assessment_status, "incomplete");
+  assert.equal(result.report.needs_human, true);
+  assert.ok(result.report.rules_hit.includes("NET-01"));
+  assert.match(result.report.summary, /cannot be parsed/);
+  assertSchema(result.report);
+  noNetwork();
 });
 
 test("diagnostics redact the API key", async () => {

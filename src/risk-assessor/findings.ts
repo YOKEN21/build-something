@@ -203,11 +203,17 @@ export function parseApprovalRevision(body: string): number | undefined {
   return Number(match[1]);
 }
 
-export function approvalMatches(approval: ApprovalInput, revision: number): boolean {
+export function approvalMatches(approval: ApprovalInput, revision: number, authoritativeIssue?: number): boolean {
   if (approval.trusted_approver.trim().length === 0 || approval.author !== approval.trusted_approver) {
     return false;
   }
-  return parseApprovalRevision(approval.body) === revision;
+  if (parseApprovalRevision(approval.body) !== revision) {
+    return false;
+  }
+  if (authoritativeIssue !== undefined && approval.source_issue !== authoritativeIssue) {
+    return false;
+  }
+  return true;
 }
 
 function planRecord(plan: PlanInput): Record<string, unknown> {
@@ -267,6 +273,36 @@ function floorFor(rule: RuleId): RiskLevel {
     return "high";
   }
   return "medium";
+}
+
+function levelFromEffect(effect: string): RiskLevel {
+  const text = effect.toLowerCase();
+  if (/\bhigh\b/.test(text)) {
+    return "high";
+  }
+  if (/\bmedium\b/.test(text)) {
+    return "medium";
+  }
+  if (/\blow\b/.test(text)) {
+    return "low";
+  }
+  return "medium";
+}
+
+/** Floors come from the trusted policy effect text. A model cannot lower them. */
+export function policyRiskFloor(policy: unknown, rules: readonly RuleId[], changeType: ChangeType | undefined): RiskLevel {
+  const effects = new Map<string, string>();
+  if (isRecord(policy) && Array.isArray(policy.rules)) {
+    for (const entry of policy.rules) {
+      if (isRecord(entry) && typeof entry.id === "string" && typeof entry.effect === "string") {
+        effects.set(entry.id, entry.effect);
+      }
+    }
+  }
+  return rules.reduce((floor, rule) => {
+    const effect = effects.get(rule);
+    return maxRisk(floor, effect === undefined ? floorFor(rule) : levelFromEffect(effect));
+  }, changeFloor(changeType));
 }
 
 export function maxRisk(left: RiskLevel, right: RiskLevel): RiskLevel {
@@ -707,7 +743,7 @@ export function analyze(input: AssessmentInput, changeRequestSchema: object): An
     planValid &&
     input.plan !== null &&
     input.approval !== null &&
-    approvalMatches(input.approval, input.plan.revision);
+    approvalMatches(input.approval, input.plan.revision, input.plan.issue);
   if (!approvalValid) {
     problems.push("approval is missing or does not match the plan revision and trusted approver");
   }
@@ -864,7 +900,8 @@ export function analyze(input: AssessmentInput, changeRequestSchema: object): An
   const sorted = sortRules(rules);
   const structuralIds = new Set<RuleId>(["SCOPE-01", "SELF-01"]);
   const reportStructural = policyParsed && !headMoved;
-  const reportContent = policyParsed && !headMoved && !ambiguous;
+  // An unparseable file makes the assessment incomplete. It does not erase a blocker confirmed on another file.
+  const reportContent = policyParsed && !headMoved;
   const reported = sortRules([
     ...(reportStructural ? sorted.filter((rule) => structuralIds.has(rule)) : []),
     ...(reportContent ? sorted.filter((rule) => !structuralIds.has(rule) && rule !== "CHECK-01") : []),

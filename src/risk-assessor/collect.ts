@@ -128,20 +128,36 @@ export function selectPlan(comments: readonly { body: string; author: string }[]
 }
 
 export function selectApproval(
-  comments: readonly { body: string; author: string }[],
+  comments: readonly { body: string; author: string; source?: number }[],
   revision: number,
   trustedApprover: string,
+  authoritativeIssue?: number,
 ): ApprovalInput | null {
   if (trustedApprover.trim().length === 0) {
     return null;
   }
-  const match = comments.find((comment) => {
-    return comment.author === trustedApprover && parseApprovalRevision(comment.body) === revision;
+  const matches = comments.filter((comment) => {
+    if (comment.author !== trustedApprover || parseApprovalRevision(comment.body) !== revision) {
+      return false;
+    }
+    if (authoritativeIssue !== undefined && comment.source !== authoritativeIssue) {
+      return false;
+    }
+    return true;
   });
+  if (authoritativeIssue !== undefined && matches.length !== 1) {
+    return null;
+  }
+  const match = matches[0];
   if (!match) {
     return null;
   }
-  return { author: match.author, body: match.body.trim(), trusted_approver: trustedApprover };
+  return {
+    author: match.author,
+    body: match.body.trim(),
+    trusted_approver: trustedApprover,
+    ...(match.source !== undefined ? { source_issue: match.source } : {}),
+  };
 }
 
 function mapConclusion(conclusion: unknown, status: unknown): CheckConclusion {
@@ -176,16 +192,16 @@ function decodeContent(body: unknown): string | null {
   return Buffer.from(body.content.replace(/\n/g, ""), "base64").toString("utf8");
 }
 
-function commentsFrom(body: unknown): { body: string; author: string }[] {
+function commentsFrom(body: unknown, source: number): { body: string; author: string; source: number }[] {
   if (!Array.isArray(body)) {
     return [];
   }
-  const comments: { body: string; author: string }[] = [];
+  const comments: { body: string; author: string; source: number }[] = [];
   for (const item of body) {
     if (!isRecord(item) || typeof item.body !== "string" || !isRecord(item.user) || typeof item.user.login !== "string") {
       continue;
     }
-    comments.push({ body: item.body, author: item.user.login });
+    comments.push({ body: item.body, author: item.user.login, source });
   }
   return comments;
 }
@@ -238,18 +254,17 @@ async function loadComments(
   repo: string,
   prNumber: number,
   prBody: string,
-): Promise<{ ok: true; comments: { body: string; author: string }[] } | { ok: false; problems: string[] }> {
-  const commentResponses = [await client.get(repoPath(owner, repo, `/issues/${prNumber}/comments?per_page=100`))];
-  for (const issueNumber of linkedIssueNumbers(prBody)) {
-    if (issueNumber === prNumber) {
-      continue;
+): Promise<{ ok: true; comments: { body: string; author: string; source: number }[] } | { ok: false; problems: string[] }> {
+  const sources = [prNumber, ...linkedIssueNumbers(prBody).filter((issueNumber) => issueNumber !== prNumber)];
+  const comments: { body: string; author: string; source: number }[] = [];
+  for (const source of sources) {
+    const response = await client.get(repoPath(owner, repo, `/issues/${source}/comments?per_page=100`));
+    if (response.status !== 200 || response.linkNext) {
+      return { ok: false, problems: ["plan comments could not be read in one page"] };
     }
-    commentResponses.push(await client.get(repoPath(owner, repo, `/issues/${issueNumber}/comments?per_page=100`)));
+    comments.push(...commentsFrom(response.body, source));
   }
-  if (commentResponses.some((response) => response.status !== 200 || response.linkNext)) {
-    return { ok: false, problems: ["plan comments could not be read in one page"] };
-  }
-  return { ok: true, comments: commentResponses.flatMap((response) => commentsFrom(response.body)) };
+  return { ok: true, comments };
 }
 
 export async function recheckPullRequest(
@@ -290,7 +305,9 @@ export async function recheckPullRequest(
     } else {
       const planResult = selectPlan(loaded.comments);
       const plan = planResult.ok ? planResult.plan : null;
-      const approval = plan ? selectApproval(loaded.comments, plan.revision, options.preserved.trustedApprover) : null;
+      const approval = plan
+        ? selectApproval(loaded.comments, plan.revision, options.preserved.trustedApprover, plan.issue)
+        : null;
       if (!sameValue(plan, options.preserved.plan) || !sameValue(approval, options.preserved.approval)) {
         problems.push("plan or approval no longer matches the preserved inputs");
       }
@@ -364,7 +381,7 @@ export async function collectPullRequest(client: GitHubClient, options: CollectO
   const comments = loaded.comments;
   const planResult = selectPlan(comments);
   const plan = planResult.ok ? planResult.plan : null;
-  const approval = plan ? selectApproval(comments, plan.revision, options.trustedApprover) : null;
+  const approval = plan ? selectApproval(comments, plan.revision, options.trustedApprover, plan.issue) : null;
   const input: AssessmentInput = {
     issue: plan?.issue ?? 0,
     pr: options.prNumber,
