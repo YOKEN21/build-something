@@ -58,11 +58,11 @@ Three request types, each with a page in `catalog/` describing what a complete r
 
 ### Kickoff fixture
 
-> `matter-search` needs read access to the documents bucket in dev so it can index attachments. The bucket is owned by another team. Please check who owns it before implementing.
+> `matter-search needs read access to the documents bucket in dev so it can index attachments. Please check who owns it and whether this access is authorized.`
 
-Prepare a short `docs/service-catalog.md` that says the documents bucket belongs to the `platform-data` team and lists its name pattern. Omit that from the request. The Platform Engineer asks the Developer Liaison directly; the Liaison answers from the catalog and cites it. That is the specialist-to-specialist handoff the brief asks for. If the catalog does not answer, the Liaison asks Kenny rather than inventing an owner.
+`docs/service-catalog.md` records `platform-data` as owner of `example-documents-dev` and authorization record `AUTH-DOC-001` for matter-search read access to the `incoming/` prefix in dev, same account. The request omits these facts. The Platform Engineer asks the Developer Liaison directly; the Liaison cites the catalog entry and record ID. That is the specialist-to-specialist handoff the brief asks for. If the catalog does not answer, the Liaison asks Kenny rather than inventing an owner.
 
-Expected outcome: a PR adding read-only access to the matter task role, with bucket-level and object-level actions in separate statements where needed; assessor returns `medium`, rule `IAM-01` (cross-team resource), not blocking; Assurance recommends GO only if authorization is established and all other GO conditions in Section 7 hold, otherwise HUMAN. Kenny decides whether to merge.
+Expected outcome: a PR adding read-only access scoped to `incoming/` per AUTH-DOC-001, with bucket-level and object-level actions in separate statements; assessor returns `medium`, rule `IAM-01` (cross-team resource), not blocking; GO only because AUTH-DOC-001 establishes authorization and all other GO conditions hold. Kenny decides whether to merge. The same request without a matching authorization record would be HUMAN.
 
 This demo's policy permits cross-team read access within the same account when the catalog records the owner and approved resource scope. Cross-account access is blocking. Missing ownership or authorization evidence requires HUMAN. These are explicit demo policy choices, not a claim about any customer's policy.
 
