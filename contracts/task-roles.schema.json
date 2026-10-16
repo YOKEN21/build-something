@@ -34,6 +34,25 @@
                 "resources": {
                   "type": "array",
                   "items": { "type": "string", "minLength": 1 }
+                },
+                "condition": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "maxProperties": 1,
+                  "required": ["StringEquals"],
+                  "properties": {
+                    "StringEquals": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "minProperties": 1,
+                      "maxProperties": 1,
+                      "required": ["s3:prefix"],
+                      "properties": {
+                        "s3:prefix": { "type": "string" }
+                      }
+                    }
+                  }
                 }
               }
             }

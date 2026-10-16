@@ -4,6 +4,18 @@ import path from "node:path";
 const SERVICE_CONFIG_PATH = /^services\/[a-z0-9]+(?:-[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*\/config\.json$/;
 const TASK_ROLE_PATH = /^iam\/[a-z0-9]+(?:-[a-z0-9]+)*-task-roles\.json$/;
 
+/** Explicit opt-in for the structural catalog-path check. A missing plan list is not this mode. */
+export const STRUCTURAL_ONLY_FLAG = "--structural-only";
+
+export function missingPlanPathListMessage(): string {
+  return [
+    "No approved plan path list was supplied.",
+    "Pass --allowed and --changed to compare a change with a plan.",
+    `Pass ${STRUCTURAL_ONLY_FLAG} to run the structural catalog-path check.`,
+    "A missing list is not a plan approval.",
+  ].join(" ");
+}
+
 export function toPosix(filePath: string): string {
   return filePath.split(path.sep).join("/");
 }

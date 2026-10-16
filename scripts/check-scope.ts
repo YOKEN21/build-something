@@ -1,5 +1,12 @@
 import path from "node:path";
-import { catalogPathProblems, filesOutsideAllowedPaths, listFiles, toPosix } from "../src/checks/scope";
+import {
+  STRUCTURAL_ONLY_FLAG,
+  catalogPathProblems,
+  filesOutsideAllowedPaths,
+  listFiles,
+  missingPlanPathListMessage,
+  toPosix,
+} from "../src/checks/scope";
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -16,8 +23,31 @@ function argValue(flag: string): string | undefined {
   return process.argv[index + 1];
 }
 
+const structuralOnly = process.argv.includes(STRUCTURAL_ONLY_FLAG);
 const allowedArg = argValue("--allowed");
 const changedArg = argValue("--changed");
+
+if (structuralOnly && (allowedArg !== undefined || changedArg !== undefined)) {
+  fail(`${STRUCTURAL_ONLY_FLAG} cannot be combined with --allowed or --changed.`);
+}
+
+if (structuralOnly) {
+  const syntheticFiles = [
+    ...listFiles(path.join(repoRoot, "services")),
+    ...listFiles(path.join(repoRoot, "iam")),
+  ].map((file) => toPosix(path.relative(repoRoot, file)));
+
+  const problems = catalogPathProblems(syntheticFiles);
+  if (problems.length > 0) {
+    fail(problems.join("\n"));
+  }
+
+  console.log("Structural catalog-path check only.");
+  console.log("No approved plan path list was supplied.");
+  console.log("This result is not a plan approval and is not an assessment result.");
+  console.log(`structural catalog paths ok for ${syntheticFiles.length} synthetic file(s)`);
+  process.exit(0);
+}
 
 if (allowedArg !== undefined || changedArg !== undefined) {
   if (allowedArg === undefined || changedArg === undefined) {
@@ -33,17 +63,4 @@ if (allowedArg !== undefined || changedArg !== undefined) {
   process.exit(0);
 }
 
-const syntheticFiles = [
-  ...listFiles(path.join(repoRoot, "services")),
-  ...listFiles(path.join(repoRoot, "iam")),
-].map((file) => toPosix(path.relative(repoRoot, file)));
-
-const problems = catalogPathProblems(syntheticFiles);
-if (problems.length > 0) {
-  fail(problems.join("\n"));
-}
-
-console.log("No approved plan path list was supplied.");
-console.log("Structural catalog-path check of synthetic files only.");
-console.log("This result is not a plan approval and is not an assessment result.");
-console.log(`structural catalog paths ok for ${syntheticFiles.length} synthetic file(s)`);
+fail(missingPlanPathListMessage());

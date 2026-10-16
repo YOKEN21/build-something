@@ -1,0 +1,259 @@
+# Release-risk assessment.
+# Dispatched from main. The key-bearing job checks out only the trusted commit
+# recorded below and reads the candidate pull request as data.
+# It does not install, build, or execute candidate code.
+# The grok-assessment environment and its reviewer are a pending account setting.
+
+name: risk-assessment
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number
+        required: true
+        type: string
+      expected_head_sha:
+        description: Expected head SHA
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  prepare:
+    name: prepare assessment inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Artifact upload in this same run does not need actions: write.
+    # No step reads Actions data, so actions: read is omitted.
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: read
+    outputs:
+      trusted_sha: ${{ steps.trusted.outputs.trusted_sha }}
+      pr_number: ${{ steps.trusted.outputs.pr_number }}
+      expected_head_sha: ${{ steps.trusted.outputs.expected_head_sha }}
+    steps:
+      - name: Require refs/heads/main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Refused: risk assessment runs only from refs/heads/main."
+            exit 1
+          fi
+
+      - name: Record the trusted assessor commit
+        id: trusted
+        shell: bash
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "pr_number must be a positive integer"
+              exit 1
+              ;;
+          esac
+          if ! [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_head_sha must be 40 hexadecimal characters"
+            exit 1
+          fi
+          echo "trusted_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "expected_head_sha=${EXPECTED_HEAD_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the trusted commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.trusted.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install trusted dependencies
+        run: npm ci
+
+      - name: Collect the candidate as data
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          ASSESSOR_SHA: ${{ steps.trusted.outputs.trusted_sha }}
+          GH_TOKEN: ${{ github.token }}
+          ASSESSMENT_APPROVER: ${{ vars.ASSESSMENT_APPROVER }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: npx tsx src/risk-assessor/cli.ts collect --output assessment-inputs
+
+      - name: Upload assessment inputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: assessment-inputs
+          path: assessment-inputs
+          if-no-files-found: error
+
+      - name: Post the pre-approval summary
+        shell: bash
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "pr_number must be a positive integer"
+              exit 1
+              ;;
+          esac
+          npx tsx src/risk-assessor/cli.ts preamble --input assessment-inputs/input.json --output pre-approval.md
+          gh pr comment "$PR_NUMBER" --body-file pre-approval.md
+
+  assess:
+    name: assess with grok
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    environment: grok-assessment
+    # Artifact upload and download in this same run do not need actions: write.
+    # No step reads Actions data, so actions: read is omitted. This job holds XAI_API_KEY.
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      - name: Require refs/heads/main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Refused: risk assessment runs only from refs/heads/main."
+            exit 1
+          fi
+
+      - name: Confirm the recorded assessor commit
+        shell: bash
+        env:
+          TRUSTED_SHA: ${{ needs.prepare.outputs.trusted_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_SHA" != "$TRUSTED_SHA" ]; then
+            echo "Refused: recorded assessor commit does not match this main run."
+            exit 1
+          fi
+
+      - name: Check out only the recorded trusted commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install trusted dependencies
+        run: npm ci
+
+      - name: Download preserved inputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: assessment-inputs
+          path: assessment-inputs
+
+      - name: Recheck the pull request head, plan, and approval
+        id: recheck
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: npx tsx src/risk-assessor/cli.ts recheck --input assessment-inputs/input.json
+
+      - name: Write a report without the model when the head changed
+        if: steps.recheck.outcome == 'failure'
+        run: npx tsx src/risk-assessor/cli.ts assess --input assessment-inputs/input.json --output risk-report.json --diagnostics provider-diagnostics.json
+
+      - name: Run the trusted assessor
+        if: steps.recheck.outcome == 'success'
+        env:
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          XAI_MODEL: ${{ vars.XAI_MODEL }}
+        run: npx tsx src/risk-assessor/cli.ts assess --input assessment-inputs/input.json --output risk-report.json --diagnostics provider-diagnostics.json
+
+      - name: Upload risk report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: risk-report
+          path: |
+            risk-report.json
+            provider-diagnostics.json
+          if-no-files-found: warn
+
+  publish:
+    name: publish report summary
+    needs: [prepare, assess]
+    if: needs.assess.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Require refs/heads/main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Refused: risk assessment runs only from refs/heads/main."
+            exit 1
+          fi
+
+      - name: Check out the trusted commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install trusted dependencies
+        run: npm ci
+
+      - name: Download the risk report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: risk-report
+          path: report
+
+      - name: Post the report summary
+        shell: bash
+        env:
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "pr_number must be a positive integer"
+              exit 1
+              ;;
+          esac
+          npx tsx src/risk-assessor/cli.ts comment-file --report report/risk-report.json --diagnostics report/provider-diagnostics.json --output pr-comment.md
+          gh pr comment "$PR_NUMBER" --body-file pr-comment.md
