@@ -31,4 +31,4 @@ The model call is one Responses API request to `https://api.x.ai/v1/responses` w
 - https://docs.x.ai/developers/model-capabilities/text/generate-text
 - https://docs.x.ai/developers/rest-api-reference/inference/responses
 
-`risk-assessment.yml` is manual dispatch from `main` only. A secret-free job records the trusted commit, collects the candidate as data, and posts those preserved inputs. The assessment job checks out that commit, rechecks the head, plan, and approval, and installs only that commit's dependencies. Candidate code is data. Live evaluation has not been run.
+Assessment normally starts automatically after checks, and manual dispatch is recovery. A secret-free job records the trusted commit, collects the candidate as data, and posts those preserved inputs. The assessment job checks out that commit, rechecks the head, plan, and approval, and installs only that commit's dependencies. Candidate code is data. Live evaluation has not been run.
