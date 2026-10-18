@@ -633,9 +633,9 @@ function hasGrokApproval(reviews: readonly ReviewView[]): boolean {
 /**
  * Expired: prepare posted, the approvals API has no grok-assessment approval, and
  * assess finished failure or cancelled without an executed step. Timestamps are
- * not execution. A skipped or deferred assess is not a gate. Queued, missing, or
- * ambiguous history is uncertain and must not clear the automatic path. An
- * approval followed by executed steps, including a later failure, is not expiry.
+ * not execution. If that post step is missing, renamed, empty, or skipped, the
+ * same completed assess is uncertain. A skipped or deferred assess is not a gate.
+ * An approval followed by executed steps, including a later failure, is not expiry.
  */
 export function classifyPriorRun(approvalsBody: unknown, jobsBody: unknown): PriorRunClass {
   const approvals = parseApprovals(approvalsBody);
@@ -686,6 +686,9 @@ export function classifyPriorRun(approvalsBody: unknown, jobsBody: unknown): Pri
     return "expired";
   }
   if (!prepareProceeded(prepare)) {
+    if (assess.conclusion === "failure" || assess.conclusion === "cancelled") {
+      return "uncertain";
+    }
     return "none";
   }
   return "uncertain";

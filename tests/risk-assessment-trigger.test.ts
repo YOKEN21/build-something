@@ -485,15 +485,103 @@ test("(b) an expired gate closes the automatic path and a skip or defer run does
     }),
   );
   assertNoJobEnvironment(cancelledWithoutProceed);
-  assert.equal(classifyPriorRun([], cancelledWithoutProceed), "none");
-  const notExpired = await runScenario({
+  const notPosted = await runScenario({
     input: { upstreamRunAttempt: 3 },
     triggering: { attempt: 3 },
     prComments: [{ id: 73, body: marker({ assessmentRunId: 557 }), login: "github-actions[bot]" }],
     prior: { 557: { approvals: [], jobs: cancelledWithoutProceed } },
   });
-  assert.equal(notExpired.result.decision, "proceed");
-  assert.equal(notExpired.result.reason, "required checks completed");
+  assert.equal(notPosted.result.decision, "skip");
+  assert.equal(notPosted.result.proceed, false);
+  assert.equal(notPosted.result.postComment, false);
+  assert.equal(notPosted.result.marker, null);
+  assert.equal(notPosted.result.reason, "prior gate history uncertain; recovery only");
+  assert.equal(classifyPriorRun([], cancelledWithoutProceed), "uncertain");
+});
+
+test("a failed assess with no executed steps is uncertain when the posting step is missing", async () => {
+  const missingPost = jobsOf(
+    {
+      ...prepareJob(true),
+      id: 4108,
+      steps: [
+        {
+          name: "Resolve the trigger",
+          status: "completed",
+          conclusion: "success",
+          number: 1,
+          started_at: "2026-10-18T00:04:00Z",
+          completed_at: "2026-10-18T00:04:30Z",
+        },
+      ],
+    },
+    assessJob({
+      id: 4208,
+      status: "completed",
+      conclusion: "failure",
+      started_at: null,
+      completed_at: "2026-10-18T00:06:00Z",
+      steps: [],
+    }),
+  );
+  assertNoJobEnvironment(missingPost);
+  const { result } = await runScenario({
+    input: { upstreamRunAttempt: 2 },
+    triggering: { attempt: 2 },
+    prComments: [{ id: 96, body: marker({ assessmentRunId: 558 }), login: "github-actions[bot]" }],
+    prior: { 558: { approvals: [], jobs: missingPost } },
+  });
+  assert.equal(result.decision, "skip");
+  assert.equal(result.proceed, false);
+  assert.equal(result.postComment, false);
+  assert.equal(result.marker, null);
+  assert.equal(result.reason, "prior gate history uncertain; recovery only");
+  assert.equal(classifyPriorRun([], missingPost), "uncertain");
+});
+
+test("a cancelled assess with no executed steps is uncertain when prepare steps are empty", async () => {
+  const emptyPrepareSteps = jobsOf(
+    { ...prepareJob(true), id: 4109, steps: [] },
+    assessJob({
+      id: 4209,
+      status: "completed",
+      conclusion: "cancelled",
+      started_at: "2026-10-18T01:00:00Z",
+      completed_at: "2026-10-18T01:00:05Z",
+      steps: [],
+    }),
+  );
+  assertNoJobEnvironment(emptyPrepareSteps);
+  const { result } = await runScenario({
+    input: { upstreamRunAttempt: 2 },
+    triggering: { attempt: 2 },
+    prComments: [{ id: 97, body: marker({ assessmentRunId: 559 }), login: "github-actions[bot]" }],
+    prior: { 559: { approvals: [], jobs: emptyPrepareSteps } },
+  });
+  assert.equal(result.decision, "skip");
+  assert.equal(result.proceed, false);
+  assert.equal(result.postComment, false);
+  assert.equal(result.marker, null);
+  assert.equal(result.reason, "prior gate history uncertain; recovery only");
+  assert.equal(classifyPriorRun([], emptyPrepareSteps), "uncertain");
+});
+
+test("recovery stays unblocked when prepare did not post", async () => {
+  const { result, calls } = await runScenario({
+    input: {
+      eventName: "workflow_dispatch",
+      prNumber: 14,
+      expectedHeadSha: HEAD,
+      upstreamRunId: undefined,
+      upstreamRunAttempt: undefined,
+      upstreamHeadSha: undefined,
+    },
+    prComments: [{ id: 98, body: marker({ assessmentRunId: 558 }), login: "github-actions[bot]" }],
+  });
+  assert.equal(result.decision, "proceed");
+  assert.equal(result.proceed, true);
+  assert.equal(result.triggerMode, "recovery workflow_dispatch");
+  assert.equal(calls.some((call) => call.includes("/approvals") || call.includes("/jobs")), false);
 });
 
 test("(b) a gate cancelled while waiting counts as expired", async () => {
