@@ -14,6 +14,7 @@ export const PREAPPROVAL_STEP_NAME = "Post the pre-approval summary";
 
 export const CLOSED_GATE_REASON = "prior gate rejected/expired for this head and revision; recovery only";
 export const GATE_OPEN_REASON = "gate already open";
+export const UNCERTAIN_GATE_REASON = "prior gate history uncertain; recovery only";
 export const CHECKS_INCOMPLETE_REASON = "check evidence incomplete";
 export const CHECKS_PENDING_REASON = "required check pending";
 export const PLAN_MISSING_REASON = "plan/approval missing";
@@ -104,20 +105,21 @@ type WorkflowRunView = {
   headRepositoryFork: boolean;
 };
 
+type JobStepView = { name: string; status: string; conclusion: string | null };
+
 type JobView = {
   name: string;
   status: string;
   conclusion: string | null;
-  startedAt: string | null;
-  steps: { name: string; status: string; conclusion: string | null }[];
-  environment: string | null;
+  steps: JobStepView[];
+  stepsKnown: boolean;
 };
 
 type ReviewView = { state: string; environments: string[] };
 
 type CheckRunView = { name: string; status: string; conclusion: string | null; headSha: string | null };
 
-export type PriorRunClass = "rejected" | "expired" | "waiting" | "none" | "unreadable";
+export type PriorRunClass = "rejected" | "expired" | "waiting" | "none" | "uncertain" | "unreadable";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -549,8 +551,10 @@ function parseJobs(body: unknown): JobView[] | null {
     if (!isRecord(entry) || typeof entry.name !== "string" || typeof entry.status !== "string") {
       return null;
     }
-    const steps: JobView["steps"] = [];
+    const steps: JobStepView[] = [];
+    let stepsKnown = false;
     if (Array.isArray(entry.steps)) {
+      stepsKnown = true;
       for (const step of entry.steps) {
         if (!isRecord(step) || typeof step.name !== "string") {
           return null;
@@ -561,19 +565,15 @@ function parseJobs(body: unknown): JobView[] | null {
           conclusion: step.conclusion === null || step.conclusion === undefined ? null : asString(step.conclusion) ?? null,
         });
       }
+    } else if (entry.steps !== undefined && entry.steps !== null) {
+      return null;
     }
-    const environment = typeof entry.environment === "string"
-      ? entry.environment
-      : isRecord(entry.environment) && typeof entry.environment.name === "string"
-        ? entry.environment.name
-        : null;
     jobs.push({
       name: entry.name,
       status: entry.status,
       conclusion: entry.conclusion === null || entry.conclusion === undefined ? null : asString(entry.conclusion) ?? null,
-      startedAt: entry.started_at === null || entry.started_at === undefined ? null : asString(entry.started_at) ?? null,
       steps,
-      environment,
+      stepsKnown,
     });
   }
   return jobs;
@@ -606,43 +606,36 @@ function parseApprovals(body: unknown): ReviewView[] | null {
   return reviews;
 }
 
-function jobNeverStarted(job: JobView): boolean {
-  if (job.startedAt) {
-    return false;
+const EXECUTED_STEP_CONCLUSIONS = new Set(["success", "failure", "cancelled", "timed_out", "action_required"]);
+
+function stepExecuted(step: JobStepView): boolean {
+  if (step.status === "in_progress") {
+    return true;
   }
-  return job.steps.every((step) => step.status !== "completed" && step.conclusion !== "success" && step.conclusion !== "failure");
+  return step.status === "completed" && step.conclusion !== null && EXECUTED_STEP_CONCLUSIONS.has(step.conclusion);
+}
+
+function anyStepExecuted(job: JobView): boolean {
+  return job.steps.some(stepExecuted);
 }
 
 function prepareProceeded(job: JobView): boolean {
-  if (job.conclusion !== "success" || job.status !== "completed") {
+  if (!job.stepsKnown || job.conclusion !== "success" || job.status !== "completed") {
     return false;
   }
-  if (job.steps.length === 0) {
-    return true;
-  }
-  const posted = job.steps.find((step) => step.name === PREAPPROVAL_STEP_NAME);
-  return posted?.conclusion === "success";
+  return job.steps.some((step) => step.name === PREAPPROVAL_STEP_NAME && stepExecuted(step) && step.conclusion === "success");
 }
 
 function hasGrokApproval(reviews: readonly ReviewView[]): boolean {
   return reviews.some((review) => review.state === "approved" && review.environments.includes(GROK_ENVIRONMENT));
 }
 
-function hadPendingDeployment(job: JobView): boolean {
-  if (job.conclusion === "skipped") {
-    return false;
-  }
-  if (job.environment === GROK_ENVIRONMENT && jobNeverStarted(job)) {
-    return true;
-  }
-  return job.conclusion === "cancelled" && jobNeverStarted(job);
-}
-
 /**
- * A real expiry is a proceed that reached the grok-assessment gate and finished
- * without approval or a started assess job. A skipped or deferred prepare also
- * leaves assess unstarted, with conclusion "skipped", and does not close the path.
- * A gate cancelled while waiting is expired.
+ * Expired: prepare posted, the approvals API has no grok-assessment approval, and
+ * assess finished failure or cancelled without an executed step. Timestamps are
+ * not execution. A skipped or deferred assess is not a gate. Queued, missing, or
+ * ambiguous history is uncertain and must not clear the automatic path. An
+ * approval followed by executed steps, including a later failure, is not expiry.
  */
 export function classifyPriorRun(approvalsBody: unknown, jobsBody: unknown): PriorRunClass {
   const approvals = parseApprovals(approvalsBody);
@@ -669,25 +662,33 @@ export function classifyPriorRun(approvalsBody: unknown, jobsBody: unknown): Pri
   if (!assess) {
     return prepare.status === "completed" ? "unreadable" : "waiting";
   }
-  if (assess.status === "waiting") {
-    return "waiting";
-  }
   if (assess.conclusion === "skipped") {
     return "none";
   }
-  if (hasGrokApproval(approvals) || !jobNeverStarted(assess)) {
+  if (!assess.stepsKnown || !prepare.stepsKnown) {
+    return "uncertain";
+  }
+  if (assess.status === "waiting") {
+    return "waiting";
+  }
+  const executed = anyStepExecuted(assess);
+  if (assess.status !== "completed" || assess.conclusion === null) {
+    return executed ? "waiting" : "uncertain";
+  }
+  if (executed) {
     return "none";
   }
-  if (!prepareProceeded(prepare) || assess.status !== "completed") {
-    return "none";
-  }
-  if (!hadPendingDeployment(assess)) {
-    return "none";
-  }
-  if (assess.conclusion === "cancelled" || assess.conclusion === "failure") {
+  if (
+    !hasGrokApproval(approvals) &&
+    prepareProceeded(prepare) &&
+    (assess.conclusion === "failure" || assess.conclusion === "cancelled")
+  ) {
     return "expired";
   }
-  return "none";
+  if (!prepareProceeded(prepare)) {
+    return "none";
+  }
+  return "uncertain";
 }
 
 function markerMatchesCandidate(marker: DedupeMarker, pr: number, head: string, revision: number): boolean {
@@ -775,6 +776,9 @@ async function evaluatePriorGates(
     const classified = classifyPriorRun(approvals.body, jobs.body);
     if (classified === "unreadable") {
       return { kind: "skip", reason: API_UNAVAILABLE_REASON };
+    }
+    if (classified === "uncertain") {
+      return { kind: "skip", reason: UNCERTAIN_GATE_REASON };
     }
     if (classified === "rejected" || classified === "expired") {
       return { kind: "skip", reason: CLOSED_GATE_REASON };

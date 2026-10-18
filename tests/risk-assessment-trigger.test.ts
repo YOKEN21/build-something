@@ -217,29 +217,53 @@ function response(status: number, body: unknown): GitHubResponse {
 
 function prepareJob(proceeded: boolean): Record<string, unknown> {
   return {
+    id: proceeded ? 4101 : 4102,
+    run_id: 555,
     name: "prepare assessment inputs",
     status: "completed",
     conclusion: "success",
     started_at: "2026-10-18T00:00:00Z",
+    completed_at: "2026-10-18T00:05:00Z",
     steps: [
       {
         name: "Post the pre-approval summary",
         status: "completed",
         conclusion: proceeded ? "success" : "skipped",
+        number: 1,
+        started_at: "2026-10-18T00:04:00Z",
+        completed_at: "2026-10-18T00:04:30Z",
       },
     ],
   };
 }
 
-function assessJob(over: Record<string, unknown>): Record<string, unknown> {
+function assessJob(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    id: 4201,
+    run_id: 555,
     name: "assess with grok",
     status: "completed",
     conclusion: "success",
     started_at: "2026-10-18T01:00:00Z",
-    steps: [{ name: "Run the trusted assessor", status: "completed", conclusion: "success" }],
+    completed_at: "2026-10-18T01:10:00Z",
+    steps: [
+      {
+        name: "Run the trusted assessor",
+        status: "completed",
+        conclusion: "success",
+        number: 1,
+        started_at: "2026-10-18T01:00:05Z",
+        completed_at: "2026-10-18T01:09:00Z",
+      },
+    ],
     ...over,
   };
+}
+
+function assertNoJobEnvironment(body: { jobs: Record<string, unknown>[] }): void {
+  for (const job of body.jobs) {
+    assert.equal(Object.hasOwn(job, "environment"), false);
+  }
 }
 
 function jobsOf(...jobs: Record<string, unknown>[]): { jobs: Record<string, unknown>[] } {
@@ -258,21 +282,32 @@ function expiredJobs(): { jobs: Record<string, unknown>[] } {
   return jobsOf(
     prepareJob(true),
     assessJob({
+      id: 4202,
       status: "completed",
       conclusion: "cancelled",
       started_at: null,
+      completed_at: null,
       steps: [],
-      environment: { name: "grok-assessment" },
     }),
   );
 }
 
 function skippedAssessJobs(): { jobs: Record<string, unknown>[] } {
-  return jobsOf(prepareJob(false), assessJob({ status: "completed", conclusion: "skipped", started_at: null, steps: [] }));
+  return jobsOf(
+    prepareJob(false),
+    assessJob({
+      id: 4203,
+      status: "completed",
+      conclusion: "skipped",
+      started_at: null,
+      completed_at: "2026-10-18T00:05:01Z",
+      steps: [],
+    }),
+  );
 }
 
 function startedJobs(): { jobs: Record<string, unknown>[] } {
-  return jobsOf(prepareJob(true), assessJob({ environment: { name: "grok-assessment" } }));
+  return jobsOf(prepareJob(true), assessJob({ id: 4204 }));
 }
 
 const defaultInput: ResolveTriggerInput = {
@@ -440,8 +475,16 @@ test("(b) an expired gate closes the automatic path and a skip or defer run does
 
   const cancelledWithoutProceed = jobsOf(
     prepareJob(false),
-    assessJob({ status: "completed", conclusion: "cancelled", started_at: null, steps: [], environment: { name: "grok-assessment" } }),
+    assessJob({
+      id: 4205,
+      status: "completed",
+      conclusion: "cancelled",
+      started_at: null,
+      completed_at: null,
+      steps: [],
+    }),
   );
+  assertNoJobEnvironment(cancelledWithoutProceed);
   assert.equal(classifyPriorRun([], cancelledWithoutProceed), "none");
   const notExpired = await runScenario({
     input: { upstreamRunAttempt: 3 },
@@ -457,13 +500,15 @@ test("(b) a gate cancelled while waiting counts as expired", async () => {
   const waitingCancel = jobsOf(
     prepareJob(true),
     assessJob({
+      id: 4206,
       status: "completed",
       conclusion: "cancelled",
       started_at: null,
+      completed_at: null,
       steps: [],
-      environment: { name: "grok-assessment" },
     }),
   );
+  assertNoJobEnvironment(waitingCancel);
   assert.equal(classifyPriorRun([], waitingCancel), "expired");
   const { result } = await runScenario({
     input: { upstreamRunAttempt: 2 },
@@ -474,6 +519,146 @@ test("(b) a gate cancelled while waiting counts as expired", async () => {
   assert.equal(result.decision, "skip");
   assert.equal(result.reason, CLOSED_GATE_REASON);
   assert.equal(result.proceed, false);
+});
+
+test("a cancelled assess with timestamps but no executed steps still closes the gate", async () => {
+  const cancelledWithTimestamps = jobsOf(
+    prepareJob(true),
+    assessJob({
+      id: 4211,
+      status: "completed",
+      conclusion: "cancelled",
+      started_at: "2026-10-18T01:00:00Z",
+      completed_at: "2026-10-18T01:00:05Z",
+      steps: [],
+    }),
+  );
+  assertNoJobEnvironment(cancelledWithTimestamps);
+  const { result } = await runScenario({
+    input: { upstreamRunAttempt: 2 },
+    triggering: { attempt: 2 },
+    prComments: [{ id: 91, body: marker({ assessmentRunId: 561 }), login: "github-actions[bot]" }],
+    prior: { 561: { approvals: [], jobs: cancelledWithTimestamps } },
+  });
+  assert.equal(result.decision, "skip");
+  assert.equal(result.proceed, false);
+  assert.equal(result.postComment, false);
+  assert.equal(result.reason, CLOSED_GATE_REASON);
+  assert.equal(classifyPriorRun([], cancelledWithTimestamps), "expired");
+});
+
+test("an unresolved queued assess with no approval skips", async () => {
+  const queued = jobsOf(
+    prepareJob(true),
+    assessJob({
+      id: 4212,
+      status: "queued",
+      conclusion: null,
+      started_at: null,
+      completed_at: null,
+      steps: [],
+    }),
+  );
+  assertNoJobEnvironment(queued);
+  const { result } = await runScenario({
+    input: { upstreamRunAttempt: 2 },
+    triggering: { attempt: 2 },
+    prComments: [{ id: 92, body: marker({ assessmentRunId: 562 }), login: "github-actions[bot]" }],
+    prior: { 562: { approvals: [], jobs: queued } },
+  });
+  assert.equal(result.decision, "skip");
+  assert.equal(result.proceed, false);
+  assert.equal(result.postComment, false);
+  assert.equal(classifyPriorRun([], queued), "uncertain");
+  assert.equal(result.reason, "prior gate history uncertain; recovery only");
+  assert.notEqual(result.reason, CLOSED_GATE_REASON);
+});
+
+test("incomplete expiry evidence without an environment field skips", async () => {
+  const assess = assessJob({
+    id: 4213,
+    status: "completed",
+    conclusion: "failure",
+    started_at: "2026-10-18T01:00:00Z",
+    completed_at: "2026-10-18T01:01:00Z",
+  });
+  delete assess.steps;
+  const ambiguous = jobsOf(prepareJob(true), assess);
+  assertNoJobEnvironment(ambiguous);
+  assert.equal(Object.hasOwn(assess, "steps"), false);
+  const { result } = await runScenario({
+    input: { upstreamRunAttempt: 2 },
+    triggering: { attempt: 2 },
+    prComments: [{ id: 93, body: marker({ assessmentRunId: 563 }), login: "github-actions[bot]" }],
+    prior: { 563: { approvals: [], jobs: ambiguous } },
+  });
+  assert.equal(result.decision, "skip");
+  assert.equal(result.proceed, false);
+  assert.equal(result.postComment, false);
+  assert.equal(classifyPriorRun([], ambiguous), "uncertain");
+  assert.equal(result.reason, "prior gate history uncertain; recovery only");
+  assert.notEqual(result.reason, CLOSED_GATE_REASON);
+});
+
+test("a failed assess with no executed steps is the expired 30-day gate", async () => {
+  const expiredFailure = jobsOf(
+    prepareJob(true),
+    assessJob({
+      id: 4214,
+      status: "completed",
+      conclusion: "failure",
+      started_at: "2026-09-18T01:00:00Z",
+      completed_at: "2026-10-18T01:00:00Z",
+      steps: [],
+    }),
+  );
+  assertNoJobEnvironment(expiredFailure);
+  const { result } = await runScenario({
+    input: { upstreamRunAttempt: 2 },
+    triggering: { attempt: 2 },
+    prComments: [{ id: 94, body: marker({ assessmentRunId: 564 }), login: "github-actions[bot]" }],
+    prior: { 564: { approvals: [], jobs: expiredFailure } },
+  });
+  assert.equal(result.decision, "skip");
+  assert.equal(result.proceed, false);
+  assert.equal(result.postComment, false);
+  assert.equal(result.reason, CLOSED_GATE_REASON);
+  assert.equal(classifyPriorRun([], expiredFailure), "expired");
+});
+
+test("an approved assess that ran steps and then failed is not an expired gate", async () => {
+  const failedAfterApproval = jobsOf(
+    prepareJob(true),
+    assessJob({
+      id: 4215,
+      status: "completed",
+      conclusion: "failure",
+      started_at: "2026-10-18T01:00:00Z",
+      completed_at: "2026-10-18T01:20:00Z",
+      steps: [
+        {
+          name: "Run the trusted assessor",
+          status: "completed",
+          conclusion: "failure",
+          number: 1,
+          started_at: "2026-10-18T01:05:00Z",
+          completed_at: "2026-10-18T01:20:00Z",
+        },
+      ],
+    }),
+  );
+  assertNoJobEnvironment(failedAfterApproval);
+  assert.equal(classifyPriorRun(approvedReview(), failedAfterApproval), "none");
+  const { result } = await runScenario({
+    input: { upstreamRunAttempt: 2 },
+    triggering: { attempt: 2 },
+    prComments: [{ id: 95, body: marker({ assessmentRunId: 565 }), login: "github-actions[bot]" }],
+    prior: { 565: { approvals: approvedReview(), jobs: failedAfterApproval } },
+  });
+  assert.equal(result.decision, "proceed");
+  assert.equal(result.proceed, true);
+  assert.notEqual(result.reason, CLOSED_GATE_REASON);
+  assert.match(result.marker ?? "", /checks=101:2,202:1/);
 });
 
 test("(c) a checks rerun with no prior rejected or expired gate proceeds as a fresh unit", async () => {
@@ -712,8 +897,16 @@ test("criterion 6 an existing prepared unit skips as a duplicate", async () => {
 test("criterion 6 a gate still waiting skips as gate already open", async () => {
   const waiting = jobsOf(
     prepareJob(true),
-    assessJob({ status: "waiting", conclusion: null, started_at: null, steps: [], environment: { name: "grok-assessment" } }),
+    assessJob({
+      id: 4207,
+      status: "waiting",
+      conclusion: null,
+      started_at: null,
+      completed_at: null,
+      steps: [],
+    }),
   );
+  assertNoJobEnvironment(waiting);
   assert.equal(classifyPriorRun([], waiting), "waiting");
   const { result } = await runScenario({
     input: { upstreamRunAttempt: 2 },
@@ -1054,22 +1247,22 @@ test("T3 every action pin is a full SHA recorded on main", () => {
 
 test("T4 permissions stay explicit and prepare's actions read is the only addition", () => {
   assert.match(workflow, /^permissions: \{\}$/m);
-  assert.doesNotMatch(workflow, /contents:\s*write/);
-  const prepare = jobSection(workflow, "prepare");
-  const assess = jobSection(workflow, "assess");
-  const publish = jobSection(workflow, "publish");
-  assert.match(prepare, /actions:\s*read/);
-  assert.match(prepare, /contents:\s*read/);
-  assert.match(prepare, /pull-requests:\s*write/);
-  assert.match(prepare, /checks:\s*read/);
-  assert.match(assess, /contents:\s*read/);
-  assert.match(assess, /pull-requests:\s*read/);
-  assert.match(assess, /checks:\s*read/);
-  const assessPermissions = assess.slice(assess.indexOf("permissions:"), assess.indexOf("\n    steps:"));
-  assert.doesNotMatch(assessPermissions, /actions:/);
-  assert.doesNotMatch(assessPermissions, /write/);
-  assert.match(publish, /actions:\s*read/);
-  assert.match(publish, /pull-requests:\s*write/);
+  const preparePermissions = permissionsBlock(jobSection(workflow, "prepare"));
+  const assessPermissions = permissionsBlock(jobSection(workflow, "assess"));
+  const publishPermissions = permissionsBlock(jobSection(workflow, "publish"));
+  assert.equal(
+    preparePermissions,
+    ["    permissions:", "      contents: read", "      pull-requests: write", "      checks: read", "      actions: read"].join("\n"),
+  );
+  assert.match(preparePermissions, /^ {6}actions: read$/m);
+  assert.equal(
+    assessPermissions,
+    ["    permissions:", "      contents: read", "      pull-requests: read", "      checks: read"].join("\n"),
+  );
+  assert.equal(
+    publishPermissions,
+    ["    permissions:", "      contents: read", "      pull-requests: write", "      actions: read"].join("\n"),
+  );
 });
 
 test("T5 run scripts do not interpolate event text", () => {
@@ -1191,6 +1384,19 @@ test("README line 34 and AGENTS line 41 state the automatic trigger", () => {
   assert.equal(readme[33]?.startsWith(sentence), true);
   assert.equal(agents[40]?.endsWith(sentence), true);
 });
+
+function permissionsBlock(jobSource: string): string {
+  const start = jobSource.indexOf("\n    permissions:\n");
+  assert.ok(start >= 0);
+  const kept: string[] = [];
+  for (const line of jobSource.slice(start + 1).split("\n")) {
+    if (kept.length > 0 && /^    [^ \n#]/.test(line)) {
+      break;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n").trimEnd();
+}
 
 function jobSection(source: string, job: string): string {
   const token = `\n  ${job}:\n`;
