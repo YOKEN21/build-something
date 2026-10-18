@@ -1572,3 +1572,47 @@ async function clientForScenario(): Promise<GitHubClient> {
   };
   return captured.client;
 }
+
+// Decision-table coverage using the existing fake GitHub API helpers.
+test("completed assessment history follows one decision table for every conclusion", async () => {
+  const mismatches: unknown[]=[];
+  let count=0;
+  for(const post of ["posted","skipped","missing","empty"]){
+    for(const conclusion of ["success","failure","neutral","cancelled","skipped","timed_out","action_required",null]){
+      for(const stepState of ["empty","all-skipped","missing","executed"]){
+        for(const approvalState of ["none","approved","rejected"]){
+          const prepare=prepareJob(post==="posted");
+          if(post==="missing")prepare.steps=[{name:"Resolve the trigger",status:"completed",conclusion:"success"}];
+          if(post==="empty")prepare.steps=[];
+          const assess=assessJob({status:"completed",conclusion});
+          if(stepState==="empty")assess.steps=[];
+          if(stepState==="all-skipped")assess.steps=[{name:"Run the trusted assessor",status:"completed",conclusion:"skipped"}];
+          if(stepState==="missing")delete assess.steps;
+          const approvals=approvalState==="rejected"?rejectedReview():approvalState==="approved"?approvedReview():[];
+          // Rejection wins. Genuine skipped assessments are ignored. Otherwise,
+          // completed history can clear only when assessment steps ran.
+          let expected:string;
+          if(approvalState==="rejected")expected="rejected";
+          else if(conclusion==="skipped")expected="none";
+          else if(stepState==="missing")expected="uncertain";
+          else if(conclusion===null)expected=stepState==="executed"?"waiting":"uncertain";
+          else if(stepState==="executed")expected="none";
+          else if(post==="posted" && approvalState==="none" && (conclusion==="failure"||conclusion==="cancelled"))expected="expired";
+          else expected="uncertain";
+          const jobs=jobsOf(prepare,assess);
+          const classification=classifyPriorRun(approvals,jobs);
+          const {result}=await runScenario({input:{upstreamRunAttempt:2},triggering:{attempt:2},
+            prComments:[{id:96,body:marker(),login:"github-actions[bot]"}],
+            prior:{555:{approvals,jobs}}});
+          const expectedDecision=expected==="none"?"proceed":"skip";
+          count++;
+          if(classification!==expected || result.decision!==expectedDecision || result.postComment!==(expectedDecision==="proceed")){
+            mismatches.push({post,conclusion,stepState,approvalState,expected,classification,decision:result.decision});
+          }
+        }
+      }
+    }
+  }
+  console.log(JSON.stringify({decisionTableCases:count,mismatchCount:mismatches.length,examples:mismatches.slice(0,8)}));
+  assert.equal(mismatches.length,0,"uncertain completed history must not clear a prior gate");
+});
