@@ -6,6 +6,6 @@
   "owner": "matter",
   "cpu": 1024,
   "memory": 2048,
-  "desiredCount": 1,
+  "desiredCount": 2,
   "publicEndpoint": false
 }
