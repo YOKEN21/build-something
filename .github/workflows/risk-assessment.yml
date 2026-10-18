@@ -1,12 +1,17 @@
 # Release-risk assessment.
-# Dispatched from main. The key-bearing job checks out only the trusted commit
-# recorded below and reads the candidate pull request as data.
-# It does not install, build, or execute candidate code.
+# Assessment normally starts automatically after checks, and manual dispatch is recovery.
+# The key-bearing job checks out only the trusted commit recorded below and reads the
+# candidate pull request as data. It does not install, build, or execute candidate code.
 # The grok-assessment environment and its reviewer are a pending account setting.
 
 name: risk-assessment
 
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('RECOVERY (PR {0})', inputs.pr_number) || format('AUTO ({0})', github.event.workflow_run.id) }}
+
 on:
+  workflow_run:
+    workflows: [checks]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -25,16 +30,28 @@ jobs:
     name: prepare assessment inputs
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: risk-assessment-prepare-${{ github.event_name == 'workflow_dispatch' && inputs.expected_head_sha || github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
     # Artifact upload in this same run does not need actions: write.
-    # No step reads Actions data, so actions: read is omitted.
+    # actions: read verifies the upstream checks run through the API.
     permissions:
       contents: read
       pull-requests: write
       checks: read
+      actions: read
     outputs:
       trusted_sha: ${{ steps.trusted.outputs.trusted_sha }}
-      pr_number: ${{ steps.trusted.outputs.pr_number }}
-      expected_head_sha: ${{ steps.trusted.outputs.expected_head_sha }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      expected_head_sha: ${{ steps.resolve.outputs.expected_head_sha }}
+      decision: ${{ steps.resolve.outputs.decision }}
+      proceed: ${{ steps.resolve.outputs.proceed }}
+      reason: ${{ steps.resolve.outputs.reason }}
+      trigger_mode: ${{ steps.resolve.outputs.trigger_mode }}
+      base_sha: ${{ steps.resolve.outputs.base_sha }}
+      plan_revision: ${{ steps.resolve.outputs.plan_revision }}
+      upstream_runs: ${{ steps.resolve.outputs.upstream_runs }}
+      check_status: ${{ steps.resolve.outputs.check_status }}
     steps:
       - name: Require refs/heads/main
         shell: bash
@@ -48,24 +65,9 @@ jobs:
       - name: Record the trusted assessor commit
         id: trusted
         shell: bash
-        env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
         run: |
           set -euo pipefail
-          case "$PR_NUMBER" in
-            ''|*[!0-9]*)
-              echo "pr_number must be a positive integer"
-              exit 1
-              ;;
-          esac
-          if ! [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "expected_head_sha must be 40 hexadecimal characters"
-            exit 1
-          fi
           echo "trusted_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "expected_head_sha=${EXPECTED_HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Check out the trusted commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,15 +80,50 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
-          cache: npm
 
       - name: Install trusted dependencies
         run: npm ci
 
-      - name: Collect the candidate as data
+      - name: Resolve the trigger
+        id: resolve
         env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id }}
+          UPSTREAM_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          UPSTREAM_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          ASSESSOR_SHA: ${{ github.sha }}
+          ASSESSMENT_RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          ASSESSMENT_APPROVER: ${{ vars.ASSESSMENT_APPROVER }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: npx tsx src/risk-assessor/trigger.ts
+
+      - name: Validate the resolved candidate
+        if: steps.resolve.outputs.decision == 'proceed'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.resolve.outputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "pr_number must be a positive integer"
+              exit 1
+              ;;
+          esac
+          if ! [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_head_sha must be 40 hexadecimal characters"
+            exit 1
+          fi
+
+      - name: Collect the candidate as data
+        if: steps.resolve.outputs.decision == 'proceed'
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.resolve.outputs.expected_head_sha }}
           ASSESSOR_SHA: ${{ steps.trusted.outputs.trusted_sha }}
           GH_TOKEN: ${{ github.token }}
           ASSESSMENT_APPROVER: ${{ vars.ASSESSMENT_APPROVER }}
@@ -94,6 +131,7 @@ jobs:
         run: npx tsx src/risk-assessor/cli.ts collect --output assessment-inputs
 
       - name: Upload assessment inputs
+        if: steps.resolve.outputs.decision == 'proceed'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: assessment-inputs
@@ -101,9 +139,10 @@ jobs:
           if-no-files-found: error
 
       - name: Post the pre-approval summary
+        if: steps.resolve.outputs.decision == 'proceed'
         shell: bash
         env:
-          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -114,11 +153,13 @@ jobs:
               ;;
           esac
           npx tsx src/risk-assessor/cli.ts preamble --input assessment-inputs/input.json --output pre-approval.md
+          cat trigger-annotation.md >> pre-approval.md
           gh pr comment "$PR_NUMBER" --body-file pre-approval.md
 
   assess:
     name: assess with grok
     needs: prepare
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.decision == 'proceed'
     runs-on: ubuntu-latest
     timeout-minutes: 50
     environment: grok-assessment
@@ -160,7 +201,6 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
-          cache: npm
 
       - name: Install trusted dependencies
         run: npm ci
@@ -231,7 +271,6 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
-          cache: npm
 
       - name: Install trusted dependencies
         run: npm ci
