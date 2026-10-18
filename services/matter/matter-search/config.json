@@ -7,5 +7,5 @@
   "cpu": 1024,
   "memory": 2048,
   "desiredCount": 3,
-  "publicEndpoint": false
+  "publicEndpoint": true
 }
